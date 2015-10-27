@@ -1,0 +1,19 @@
+put your application slices here
+
+skeleton of one slice:
+
+slice_name
++-- app
+|   +-- controllers
+|   +-- models
+|   +-- views
++-- config
+|   +-- router.php
++-- public
+
+in the router.php you should map routes like this:
+
+$ROUTER->map_connect('my_route', array("controller" => "controller"), true);
+
+note the true at end, this force the route to be at top of priority (since the routes of slices are added after
+the app routes, its almost always needed)

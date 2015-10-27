@@ -1,0 +1,435 @@
+<?php
+
+/*
+ * Copyright 2008 Wilker Lucio <wilkerlucio@gmail.com>
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License. 
+ */
+
+define("IMAGE_BIAS_VERTICAL", 1);
+define("IMAGE_BIAS_HORIZONTAL", 2);
+
+define("IMAGE_H_LEFT",    1);
+define("IMAGE_H_CENTER",  2);
+define("IMAGE_H_RIGHT",   4);
+define("IMAGE_V_TOP",     8);
+define("IMAGE_V_CENTER", 16);
+define("IMAGE_V_BOTTOM", 32);
+
+class Ra_Image {
+    /**
+     * Presets of extensions to use while converting extensions to default
+     * PHP image types
+     */
+    protected static $extension_map = array(
+        'gif'  => IMAGETYPE_GIF,
+        'jpg'  => IMAGETYPE_JPEG,
+        'jpeg' => IMAGETYPE_JPEG,
+        'png'  => IMAGETYPE_PNG
+    );
+    
+    protected $image;
+    protected $width;
+    protected $height;
+    protected $bias;
+    protected $aspect_x;
+    protected $aspect_y;
+    
+    public function __construct($image) {
+        $this->image = $this->load_image($image);
+        $this->prepare_data($this->image, true);
+    }
+    
+    /**
+     * Get current working image resource
+     *
+     * @return resource Resource of current image
+     */
+    public function get_image()
+    {
+        return $this->image;
+    }
+    
+    /**
+     * Create a copy of current image
+     *
+     * @return resource Resource of copy image
+     */
+    public function clone_image() {
+        $image = imagecreatetruecolor($this->width, $this->height);
+        imagecopy($image, $this->image, 0, 0, 0, 0, $this->width, $this->height);
+        
+        return $image;
+    }
+    
+    /**
+     * Resize image to new output size
+     *
+     * @param $new_width The new width of image (use 0 with a valid height to calcular proportional)
+     * @param $new_height The new height of image (use 0 with a valid width to calcular proportional)
+     * @param $mode The mode of resize:
+     *                - 0 to normal resize
+     *                - 1 to resize with crop
+     *                - 2 to resize by reduction (and fill the blank with bgcolor given in fourth parameter)
+     *                - 3 to resize using width/height as constraints (use to keep a max width/height without crop or distorce)
+     * @param $bgcolor Background color to fill when using resize mode 2
+     * @param $grow Determine if the image haves to grow, if you pass false the image only will be resized if new size is smaller than original size
+     * @return boolean True if image was resized, false otherwise
+     */
+    public function resize($new_width, $new_height, $mode = 0, $bgcolor = '#FFFFFF', $grow = true) {
+        if ($mode == 3) {
+            if ($new_width < 1 || $new_height < 1) {
+                throw new Ra_Image_Exception("Argument error: to use resize mode 3 you should specify the width and height of resize");
+            }
+            
+            $resize_constraint = $new_height / $new_width;
+            
+            if ($this->aspect_x > $resize_constraint) {
+                $new_width = 0;
+            } else {
+                $new_height = 0;
+            }
+        }
+        
+        if ($new_width == 0) {
+            $new_width = $new_height * $this->aspect_y;
+        }
+        
+        if ($new_height == 0) {
+            $new_height = $new_width * $this->aspect_x;
+        }
+        
+        if (!$grow) {
+            if ($this->width < $new_width || $this->height < $new_height) {
+                return false;
+            }
+        }
+        
+        $src_x = $src_y = $dst_x = $dst_y = 0;
+        
+        $src_width = $this->width;
+        $src_height = $this->height;
+        
+        $dst_width = $new_width;
+        $dst_height = $new_height;
+        
+        $resized = imagecreatetruecolor($new_width, $new_height);
+        $new_info = $this->prepare_data($resized);
+        
+        if ($mode == 1) {
+            if ($this->aspect_x > $new_info['aspect_x']) {
+                $src_height = $this->width * ($new_info['aspect_x']);
+                $src_y = $this->height / 2 - $src_height / 2;
+            } else {
+                $src_width = $this->height * ($new_info['aspect_y']);
+                $src_x = $this->width / 2 - $src_width / 2;
+            }
+        } elseif ($mode == 2) {
+            imagefill($resized, 0, 0, $this->color_from_hex($bgcolor, $resized));
+            
+            if ($this->aspect_x > $new_info['aspect_x']) {
+                $dst_width = $dst_height * ($this->aspect_y);
+                $dst_x = $new_width / 2 - $dst_width / 2;
+            } else {
+                $dst_height = $dst_width * ($this->aspect_x);
+                $dst_y = $new_height / 2 - $dst_height / 2;
+            }
+        }
+        
+        imagealphablending($resized, false);
+        imagesavealpha($resized, true);
+        
+        imagecopyresampled($resized, $this->image, $dst_x, $dst_y, $src_x, $src_y, $dst_width, $dst_height, $src_width, $src_height);
+        
+        imagedestroy($this->image);
+        
+        $this->image = $resized;
+        $this->prepare_data($this->image, true);
+        
+        return true;
+    }
+    
+    /**
+     * Merge another image into current image
+     *
+     * This method gets another image and merge with current image,
+     * it can be usefull to insert watermark of our company at image.
+     *
+     * @param string|resource|Ra_Image $image
+     *   The image to use, you can use an string with the image path, or
+     *   a image resource variable, or another Ra_Image object
+     * @param integer|array $position
+     *   The position to inject the new image, you can use an array with strict
+     *   positions, like array(10, 20) (x,y), or use the contants:
+     *     IMAGE_H_LEFT, IMAGE_H_CENTER, IMAGE_H_RIGHT
+     *     IMAGE_V_TOP, IMAGE_V_CENTER, IMAGE_V_BOTTOM
+     *   with the constants you may use one for horizontal and one for vertical
+     *   concatenating with bitwise OR operador "|", for example, to put the
+     *   image at bottom left position of image you should use:
+     *     IMAGE_V_BOTTOM | IMAGE_H_CENTER
+     * @param integer|array $margin
+     *   the margin to be applied when you use pre-defined positions at second
+     *   parameter. if you pass one integer, the position will be used equals
+     *   at vertical and horizontal spacements. or you can pass one array to
+     *   specify different margins for vertical and horizontal, examples:
+     *     4 # will put 4 pixels into both
+     *     array(3, 10) # put 3 pixels for horizontal margin, 10 to vertical
+     */
+    public function merge($image, $position = null, $margin = 0)
+    {
+        //adjust position param
+        if ($position === null) $position = IMAGE_H_RIGHT | IMAGE_V_BOTTOM;
+        
+        //check if image is a string (with image path)
+        if (is_string($image)) {
+            $image = new Ra_Image($image);
+        }
+        
+        //check if image is an Ra_Image
+        if (is_a($image, 'Ra_Image')) {
+            $image = $image->get_image();
+        }
+        
+        //calculate margin
+        if (!is_array($margin)) {
+            $margin = array($margin, $margin);
+        }
+        
+        //get image data
+        $data = $this->prepare_data($image);
+        
+        //if is not an array, calculate the position
+        if (!is_array($position)) {
+            $p = $position;
+            $position = array(0, 0);
+            
+            if (($p & IMAGE_H_LEFT) > 0)   $position[0] = 0 + $margin[0];
+            if (($p & IMAGE_H_CENTER) > 0) $position[0] = floor(($this->width / 2) - ($data['width'] / 2));
+            if (($p & IMAGE_H_RIGHT) > 0)  $position[0] = floor($this->width - $data['width']) - $margin[0];
+            
+            if (($p & IMAGE_V_TOP) > 0)    $position[1] = 0 + $margin[1];
+            if (($p & IMAGE_V_CENTER) > 0) $position[1] = floor(($this->height / 2) - ($data['height'] / 2));
+            if (($p & IMAGE_V_BOTTOM) > 0) $position[1] = floor($this->height - $data['height']) - $margin[1];
+        }
+        
+        //ensure alpha blending
+        imagealphablending($this->image, true);
+        imagealphablending($image, true);
+        
+        //do the merge
+        imagecopy($this->image, $image, $position[0], $position[1], 0, 0, $data['width'], $data['height']);
+    }
+    
+    /**
+     * Output image to browser
+     *
+     * @param $type Type of image, use PHP standart constants, see http://br2.php.net/manual/en/function.image-type-to-mime-type.php for a list of valid types (default IMAGETYPE_JPEG)
+     * @param $include_headers Automatic include output headers for content-type (default true)
+     * @return void
+     */
+    public function output($type = IMAGETYPE_JPEG, $include_headers = true) {
+        $data = $this->bdata($type);
+        
+        if ($include_headers) {
+            header('Content-Type: ' . image_type_to_mime_type($type));
+            header('Content-Length: ' . strlen($data));
+        }
+        
+        echo $data;
+    }
+    
+    /**
+     * Get binary data of image
+     *
+     * @param $type Type of image, use PHP standart constants, see http://br2.php.net/manual/en/function.image-type-to-mime-type.php for a list of valid types (default IMAGETYPE_JPEG)
+     * @return string Binary data of image
+     */
+    public function bdata($type = IMAGETYPE_JPEG) {
+        $fn = $this->output_function($type);
+        
+        if ($fn === false) {
+            throw new Ra_Image_Exception($this, "File type " . image_type_to_mime_type($info[2]) . " is not supported");
+        }
+        
+        imagesavealpha($this->image, true);
+        
+        ob_start();
+        $fn($this->image);
+        $data = ob_get_clean();
+        
+        return $data;
+    }
+    
+    /**
+     * Save image into a file
+     *
+     * @param $path Path to save image
+     * @param $type Type output image
+     * @return void
+     */
+    public function save($path, $type = false) {
+        //compute output type
+        if ($type === false) {
+            $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+            
+            if (array_key_exists($ext, self::$extension_map)) {
+                $type = self::$extension_map[$ext];
+            } else {
+                $type = IMAGETYPE_JPEG;
+            }
+        }
+        
+        $fn = $this->output_function($type);
+        
+        if ($fn === false) {
+            throw new Ra_Image_Exception($this, "File type " . image_type_to_mime_type($type) . " is not supported");
+        }
+        
+        imagesavealpha($this->image, true);
+        
+        $fn($this->image, $path);
+    }
+    
+    /**
+     * Free memory of current image
+     *
+     * @return void
+     */
+    public function destroy() {
+        if ($this->image === null) {
+            return;
+        }
+        
+        imagedestroy($this->image);
+        
+        $this->image = null;
+    }
+    
+    /**
+     * Get color by hexadecimal value (using format like #000000)
+     *
+     * @param $color The color to be converted
+     * @param $image Image to allocate color (default current)
+     * @return void
+     */
+    protected function color_from_hex($color, $image = null) {
+        if ($image === null) {
+            $image = $this->image;
+        }
+        
+        return imagecolorallocate($image,
+            hexdec(substr($color, 1, 2)),
+            hexdec(substr($color, 3, 2)),
+            hexdec(substr($color, 5, 2))
+        );
+    }
+    
+    /**
+     * Load image
+     *
+     * @param $path Path of image to load
+     * @return resource The image resource
+     */
+    protected function load_image($path) {
+        $info = @getimagesize($path);
+        
+        if ($info === false) {
+            throw new Ra_Image_Exception($this, "File not found, not acessible or invalid image type for $path");
+        }
+        
+        $fn = $this->load_function($info[2]);
+        
+        if ($fn === false) {
+            throw new Ra_Image_Exception($this, "File type " . image_type_to_mime_type($info[2]) . " is not supported");
+        }
+        
+        $image = @$fn($path);
+        
+        if (!$image) {
+            throw new Ra_Image_Exception($this, "Error opening image file, probably corrupted data");
+        }
+        
+        return $image;
+    }
+    
+    /**
+     * Get load function to use according to image type
+     *
+     * @param $type Type of image
+     * @return string The function name
+     */
+    protected final function load_function($type) {
+        switch ($type) {
+            case 1:
+                return 'imagecreatefromgif';
+            case 2:
+                return 'imagecreatefromjpeg';
+            case 3:
+                return 'imagecreatefrompng';
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Get output function to use according to image type
+     *
+     * @param $type Type of image
+     * @return string The function name
+     */
+    protected final function output_function($type) {
+        switch ($type) {
+            case 1:
+                return 'imagegif';
+            case 2:
+                return 'imagejpeg';
+            case 3:
+                return 'imagepng';
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Calculate basic data about image
+     *
+     * @param $image The image to caculate data
+     * @param $compute_current Put image data at current information
+     * @return array Array containing data
+     */
+    protected function prepare_data($image, $compute_current = false) {
+        $data['width'] = imagesx($image);
+        $data['height'] = imagesy($image);
+        $data['aspect_x'] = $data['height'] / $data['width'];
+        $data['aspect_y'] = $data['width'] / $data['height'];
+        $data['bias'] = $data['width'] >= $data['height'] ? IMAGE_BIAS_HORIZONTAL : IMAGE_BIAS_VERTICAL;
+        
+        if ($compute_current) {
+            foreach ($data as $key => $value) {
+                $this->$key = $value;
+            }
+        }
+        
+        return $data;
+    }
+}
+
+class Ra_Image_Exception extends Exception {
+    public $image;
+    
+    public function __construct($image, $message) {
+        parent::__construct($message);
+        
+        $this->image = $image;
+    }
+}

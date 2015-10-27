@@ -1,0 +1,11 @@
+# AuthType Basic
+# AuthName "lancamento"
+# AuthUserFile "/home/gruposabertoscom/.htpasswds/public_html/passwd"
+# require valid-user
+
+
+RewriteEngine On
+RewriteCond public/$1 -F
+RewriteRule (.+) public/$1 [L]
+RewriteCond $0 !^(index\.php|public/)
+RewriteRule (.*) index.php/$1 [QSA]
